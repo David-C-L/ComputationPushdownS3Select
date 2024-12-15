@@ -1,0 +1,114 @@
+#define CROW_MAIN
+#include "ParquetServer.hpp"
+#include "crow.h"
+#include <arrow/api.h>
+#include <arrow/io/file.h>
+#include <parquet/arrow/reader.h>
+#include <iostream>
+#include <sstream>
+#include <vector>
+#include <regex>
+#include <stdexcept>
+
+// Function to read a specific range of rows from a Parquet file
+std::string read_parquet_range(const std::string& filepath, size_t start, size_t end) {
+    std::shared_ptr<arrow::io::ReadableFile> input_file;
+    auto status = arrow::io::ReadableFile::Open(filepath, &input_file);
+    if (!status.ok()) {
+        throw std::runtime_error("Failed to open Parquet file: " + status.ToString());
+    }
+
+    std::unique_ptr<parquet::arrow::FileReader> reader;
+    status = parquet::arrow::OpenFile(input_file, arrow::default_memory_pool(), &reader);
+    if (!status.ok()) {
+        throw std::runtime_error("Failed to create Parquet reader: " + status.ToString());
+    }
+
+    std::shared_ptr<arrow::Table> table;
+    reader->ReadTable(&table);
+
+    std::ostringstream ss;
+    ss << "[";
+    auto num_rows = table->num_rows();
+    auto num_columns = table->num_columns();
+    start = std::min(start, num_rows);
+    end = std::min(end, num_rows);
+
+    for (size_t row = start; row < end; ++row) {
+        ss << "{";
+        for (int col = 0; col < num_columns; ++col) {
+            auto column = table->column(col)->chunk(0);
+            auto value = column->ToString(row);
+            ss << "\"" << table->schema()->field(col)->name() << "\": \"" << value << "\"";
+            if (col != num_columns - 1) {
+                ss << ", ";
+            }
+        }
+        ss << "}";
+        if (row != end - 1) {
+            ss << ", ";
+        }
+    }
+    ss << "]";
+    return ss.str();
+}
+
+// Helper function to parse the Range header
+std::vector<std::pair<size_t, size_t>> parse_ranges(const std::string& range_header) {
+    std::vector<std::pair<size_t, size_t>> ranges;
+    std::regex range_regex(R"(bytes=(\d+)-(\d+))");
+    std::smatch match;
+
+    std::string::const_iterator search_start(range_header.cbegin());
+    while (std::regex_search(search_start, range_header.cend(), match, range_regex)) {
+        size_t start = std::stoul(match[1]);
+        size_t end = std::stoul(match[2]) + 1; // Convert to exclusive range
+        ranges.emplace_back(start, end);
+        search_start = match.suffix().first;
+    }
+
+    return ranges;
+}
+
+int main() {
+    crow::SimpleApp app;
+
+    CROW_ROUTE(app, "/parquet")
+    ([&](const crow::request& req) {
+        try {
+            std::string filepath = "example.parquet";
+            std::string range_header = req.get_header_value("Range");
+            std::vector<std::pair<size_t, size_t>> ranges = parse_ranges(range_header);
+
+            if (ranges.empty()) {
+                return crow::response(416, "Range Not Satisfiable");
+            }
+
+            // Prepare a multipart/byteranges response
+            std::ostringstream response_body;
+            std::string boundary = "MULTIPART_BOUNDARY";
+
+            response_body << "--" << boundary << "\r\n";
+
+            for (const auto& [start, end] : ranges) {
+                std::string range_data = read_parquet_range(filepath, start, end);
+
+                response_body << "Content-Type: application/json\r\n";
+                response_body << "Content-Range: bytes " << start << "-" << end - 1 << "\r\n\r\n";
+                response_body << range_data << "\r\n--" << boundary << "\r\n";
+            }
+
+            // Create the response
+            crow::response res;
+            res.code = 206; // HTTP status for partial content
+            res.set_header("Content-Type", "multipart/byteranges; boundary=" + boundary);
+            res.write(response_body.str());
+            return res;
+        } catch (const std::exception& e) {
+            return crow::response(500, e.what());
+        }
+    });
+
+    app.port(8080).multithreaded().run();
+    return 0;
+}
