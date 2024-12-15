@@ -1,6 +1,7 @@
 #include <cpprest/http_listener.h>
 #include <cpprest/uri.h>
 #include <cpprest/json.h>
+#include <cpprest/producerconsumerstream.h>
 #include <fstream>
 #include <sstream>
 #include <regex>
@@ -57,7 +58,7 @@ std::vector<std::pair<size_t, size_t>> parse_ranges(const std::string& range_hea
 // Function to handle incoming requests asynchronously
 void handle_request(http_request request) {
     try {
-        std::string filepath = "example.parquet"; // Path to your file
+        std::string filepath = "/home/david/Documents/PhD/datasets/parquet_tpch/tpch_1000MB_lineitem_uncompressed.parquet"; // Path to your file
         std::string range_header;
 
         // Check if the Range header is present
@@ -80,16 +81,22 @@ void handle_request(http_request request) {
         http_response response(status_codes::PartialContent);
         response.headers().add(U("Content-Type"), "multipart/byteranges; boundary=" + boundary);
 
+
+	std::cout << "BEFORE STREAMBUF" << std::endl;
         // Use a shared asynchronous stream buffer
-        auto streambuf = std::make_shared<concurrency::streams::container_buffer<std::vector<uint8_t>>>();
+        auto streambuf = std::make_shared<concurrency::streams::producer_consumer_buffer<uint8_t>>();
         auto ostream = streambuf->create_ostream();
         response.set_body(streambuf->create_istream());
+	std::cout << "SET BODY" << std::endl;
 
         // Reply to the request and asynchronously write chunks
         request.reply(response);
+	std::cout << "REPLIED" << std::endl;
 
         pplx::create_task([ranges, filepath, ostream, boundary] {
             try {
+	      
+	      std::cout << "IN TASK" << std::endl;
                 for (const auto& range : ranges) {
                     size_t start = range.first;
                     size_t end = range.second;
@@ -115,8 +122,10 @@ void handle_request(http_request request) {
 
                 // Close the stream
                 ostream.close().wait();
+		
+		std::cout << "DONE TASK" << std::endl;
             } catch (const std::exception& e) {
-                ostream.close();
+	      ostream.close().wait();
             }
         });
     } catch (const std::exception& e) {
