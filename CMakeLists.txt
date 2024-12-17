@@ -98,6 +98,8 @@ ExternalProject_Add(duckdb_project
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
+find_package(CURL REQUIRED)
+
 find_package(cpprestsdk REQUIRED)
 
 find_package(Boost REQUIRED)
@@ -118,6 +120,20 @@ else()
   set(pluginInstallDir lib)
 endif(MSVC)
 
+
+################################## LAUNCHER TARGET ###############################
+
+add_executable(SimulateManyRequests Source/SimulateManyRequests.cpp)
+
+target_link_libraries(SimulateManyRequests PUBLIC Threads::Threads)
+
+################################## REQUEST TARGET ###############################
+
+add_executable(ParquetRequest Source/ParquetRequest.cpp)
+
+target_link_libraries(ParquetRequest PUBLIC curl Threads::Threads)
+
+################################## SERVER TARGET ################################
 set(ImplementationFiles Source/ParquetServer.cpp)
 
 add_executable(ParquetServer ${ImplementationFiles})

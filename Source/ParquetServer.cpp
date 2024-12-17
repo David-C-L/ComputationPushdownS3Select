@@ -80,7 +80,7 @@ std::vector<std::pair<size_t, size_t>> parse_ranges(const std::string& range_hea
 // Function to handle incoming requests asynchronously
 void handle_request_byte_ranges(http_request request) {
   try {
-    std::string filepath = "/home/david/Documents/PhD/datasets/parquet_tpch/tpch_1000MB_lineitem_uncompressed.parquet"; // Path to your file
+    std::string filepath = "/home/david/Documents/PhD/datasets/parquet_tpch/tpch_1000MB_lineitem_gzip.parquet"; // Path to your file
     std::string range_header;
 
     // Check if the Range header is present
@@ -144,6 +144,7 @@ void handle_request_byte_ranges(http_request request) {
 	ostream.close().wait();
       }
     });
+
   } catch (const std::exception& e) {
     request.reply(status_codes::InternalError, e.what());
   }
@@ -154,15 +155,12 @@ void execute_sql_on_parquet(const std::string &parquet_file,
                             concurrency::streams::ostream out_stream) {
     duckdb::DuckDB db(nullptr); // In-memory database
     duckdb::Connection con(db);
-    
-    std::cout << "OPENED DUCKDB" << std::endl;
 
     // Load the Parquet file into DuckDB
     std::ostringstream parquet_load_query;
     parquet_load_query << "CREATE TABLE parquet_data AS SELECT * FROM read_parquet('" << parquet_file << "');";
     con.Query(parquet_load_query.str());
     
-    std::cout << "CREATED TABLE" << std::endl;
 
     // Generate a unique temporary file name
     std::string temp_filename = generate_random_filename();
@@ -170,9 +168,6 @@ void execute_sql_on_parquet(const std::string &parquet_file,
     // Prepare the COPY TO query
     std::ostringstream query_stream;
     query_stream << "COPY (" << sql_query << ") TO '" << temp_filename << "' (FORMAT CSV, HEADER TRUE);";
-
-    std::cout << "COPYING TO " << temp_filename << std::endl;
-    std::cout << "QUERY:\n" << query_stream.str() << std::endl;
     // Execute the COPY TO command
     auto result = con.Query(query_stream.str());
     if (!result || result->HasError()) {
@@ -180,7 +175,6 @@ void execute_sql_on_parquet(const std::string &parquet_file,
         throw std::runtime_error("SQL query execution failed: " + result->GetError());
     }
     
-    std::cout << "COPIED" << std::endl;
 
     // Stream the temporary file to the output stream in chunks
     try {
@@ -203,7 +197,6 @@ void execute_sql_on_parquet(const std::string &parquet_file,
         temp_file.close();
         std::remove(temp_filename.c_str()); // Delete the temporary file
 	
-	std::cout << "STREAMED" << std::endl;
         // Signal end of response
         out_stream.close().wait();
     } catch (const std::exception &e) {
@@ -238,9 +231,7 @@ void handle_request_sql_query(http_request request) {
       request.reply(status_codes::BadRequest, "Missing 'sql' query parameter");
       return;
     }
-    std::cout << "GOT QUERY" << std::endl;
     std::string sql_query = custom_url_decode(uri::decode(query_params[U("sql")]));
-    std::cout << "QUERY: " << sql_query << std::endl;
     std::string file_path = "/home/david/Documents/PhD/datasets/parquet_tpch/tpch_1000MB_lineitem_gzip.parquet"; // Path to your file
 
     // Check if the file exists
@@ -248,7 +239,6 @@ void handle_request_sql_query(http_request request) {
       request.reply(status_codes::NotFound, "File not found: " + file_path);
       return;
     }
-    std::cout << "FOUND FILE" << std::endl;
 
     // Create a producer-consumer buffer for chunked streaming
     auto streambuf = concurrency::streams::producer_consumer_buffer<uint8_t>();
@@ -259,7 +249,6 @@ void handle_request_sql_query(http_request request) {
     response.headers().add(U("Content-Type"), U("text/csv"));
     response.set_body(streambuf.create_istream());
     request.reply(response);
-    std::cout << "SET BODY AND STARTED REPLY" << std::endl;
 
     // Execute the SQL query and stream the output
     pplx::create_task([file_path, sql_query, out_stream]() {
