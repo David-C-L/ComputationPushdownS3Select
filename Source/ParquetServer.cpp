@@ -11,11 +11,31 @@
 #include <memory>
 #include <cstdio>
 #include <iomanip>
+#include <chrono>
 #include <filesystem>
 
 using namespace web;
 using namespace web::http;
 using namespace web::http::experimental::listener;
+
+void logNow(int64_t bytes = 0) {
+    // Get the current time as a time_point
+    auto now = std::chrono::system_clock::now();
+
+    // Convert to a time_t for calendar time
+    std::time_t current_time = std::chrono::system_clock::to_time_t(now);
+
+    // Extract the fractional seconds (milliseconds)
+    auto duration = now.time_since_epoch();
+    auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration) % 1000;
+
+    // Format the output
+    // std::ofstream logFile("unfiltered_10_data_sent_log.txt");
+    std::tm* local_time = std::localtime(&current_time); // Convert to local time
+    std::cout << bytes << "SENT AT:" << std::put_time(local_time, "%Y-%m-%d %H:%M:%S") << "." 
+              << std::setfill('0') << std::setw(3) << millis.count() << std::endl;
+    // logFile.close();
+}
 
 std::string generate_random_filename() {
     // Use the system temporary directory
@@ -80,7 +100,7 @@ std::vector<std::pair<size_t, size_t>> parse_ranges(const std::string& range_hea
 // Function to handle incoming requests asynchronously
 void handle_request_byte_ranges(http_request request) {
   try {
-    std::string filepath = "/home/david/Documents/PhD/datasets/parquet_tpch/tpch_1000MB_lineitem_gzip.parquet"; // Path to your file
+    std::string filepath = "/home/ubuntu/tpch_1000MB_lineitem_gzip.parquet"; // Path to your file
     std::string range_header;
 
     // Check if the Range header is present
@@ -130,6 +150,7 @@ void handle_request_byte_ranges(http_request request) {
 
 	  // Write the byte range data
 	  ostream.streambuf().putn_nocopy(byte_data.data(), byte_data.size()).wait();
+	  // logNow(byte_data.size());
 	  ostream.print("\r\n").wait();
 	}
 
@@ -138,6 +159,7 @@ void handle_request_byte_ranges(http_request request) {
 	ostream.print(closing_boundary).wait();
 
 	// Close the stream
+	logNow();
 	ostream.close().wait();
 		
       } catch (const std::exception& e) {
@@ -153,7 +175,10 @@ void handle_request_byte_ranges(http_request request) {
 void execute_sql_on_parquet(const std::string &parquet_file,
                             const std::string &sql_query,
                             concurrency::streams::ostream out_stream) {
-    duckdb::DuckDB db(nullptr); // In-memory database
+
+    duckdb::DBConfig config;
+    config.options.maximum_threads = 1;
+    duckdb::DuckDB db(nullptr, &config); // In-memory database
     duckdb::Connection con(db);
 
     // Load the Parquet file into DuckDB
@@ -185,19 +210,22 @@ void execute_sql_on_parquet(const std::string &parquet_file,
 
         const size_t CHUNK_SIZE = 16 * 1024; // 16 KB chunks
         std::vector<uint8_t> buffer(CHUNK_SIZE);
-
         while (temp_file) {
             temp_file.read(reinterpret_cast<char *>(buffer.data()), buffer.size());
             std::streamsize bytes_read = temp_file.gcount();
             if (bytes_read > 0) {
                 out_stream.streambuf().putn_nocopy(buffer.data(), bytes_read).wait();
-            }
+		// logNow(bytes_read);
+	    }
         }
 
+	// auto size = std::filesystem::file_size(temp_filename);
+	// std::cout << "FILE SIZE: " << size << std::endl;
         temp_file.close();
         std::remove(temp_filename.c_str()); // Delete the temporary file
 	
         // Signal end of response
+	logNow();
         out_stream.close().wait();
     } catch (const std::exception &e) {
         std::remove(temp_filename.c_str()); // Clean up the temporary file
@@ -232,7 +260,7 @@ void handle_request_sql_query(http_request request) {
       return;
     }
     std::string sql_query = custom_url_decode(uri::decode(query_params[U("sql")]));
-    std::string file_path = "/home/david/Documents/PhD/datasets/parquet_tpch/tpch_1000MB_lineitem_gzip.parquet"; // Path to your file
+    std::string file_path = "/home/ubuntu/tpch_1000MB_lineitem_gzip.parquet"; // Path to your file
 
     // Check if the file exists
     if (!std::ifstream(file_path)) {
@@ -254,6 +282,7 @@ void handle_request_sql_query(http_request request) {
     pplx::create_task([file_path, sql_query, out_stream]() {
       execute_sql_on_parquet(file_path, sql_query, out_stream);
     });
+    
   } catch (const std::exception &e) {
     request.reply(status_codes::InternalError, e.what());
   }
