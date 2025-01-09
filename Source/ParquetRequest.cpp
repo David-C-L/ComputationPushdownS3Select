@@ -23,7 +23,7 @@ void makeRangeRequest(const std::string& url, const std::string& range) {
     headers = curl_slist_append(headers, ("Range: bytes=" + range).c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
-    std::cout << "Making range request...\n";
+    // std::cout << "Making range request...\n";
     res = curl_easy_perform(curl);
 
     if (res != CURLE_OK) {
@@ -47,7 +47,7 @@ void makeQueryRequest(const std::string& url, const std::string& query) {
     curl_easy_setopt(curl, CURLOPT_URL, fullUrl.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
 
-    std::cout << "Making query request...\n";
+    // std::cout << "Making query request...\n";
     res = curl_easy_perform(curl);
 
     if (res != CURLE_OK) {
