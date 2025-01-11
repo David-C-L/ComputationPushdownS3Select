@@ -43,7 +43,33 @@ void makeQueryRequest(const std::string& url, const std::string& query) {
   curl = curl_easy_init();
 
   if (curl) {
-    std::string fullUrl = url + "?" + curl_easy_escape(curl, query.c_str(), query.length());
+    auto queryParam = curl_easy_escape(curl, query.c_str(), query.length());
+    std::string fullUrl = url + "?" + queryParam;
+    curl_easy_setopt(curl, CURLOPT_URL, fullUrl.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+
+    // std::cout << "Making query request...\n";
+    res = curl_easy_perform(curl);
+
+    if (res != CURLE_OK) {
+      std::cerr << "curl_easy_perform() failed: " << curl_easy_strerror(res) << std::endl;
+    }
+    curl_free(queryParam);
+    curl_easy_cleanup(curl);
+  }
+}
+
+// Function to perform a select request
+void makeSelectRequest(const std::string& url, const std::string& selectivity, const std::string& columns) {
+  CURL* curl;
+  CURLcode res;
+
+  curl = curl_easy_init();
+
+  if (curl) {
+    auto selectivityParam = curl_easy_escape(curl, selectivity.c_str(), selectivity.length());
+    auto columnsParam = curl_easy_escape(curl, columns.c_str(), columns.length());
+    std::string fullUrl = url + "?" + selectivityParam + "#" + columnsParam;
     curl_easy_setopt(curl, CURLOPT_URL, fullUrl.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
 
@@ -54,6 +80,8 @@ void makeQueryRequest(const std::string& url, const std::string& query) {
       std::cerr << "curl_easy_perform() failed: " << curl_easy_strerror(res) << std::endl;
     }
 
+    curl_free(selectivityParam);
+    curl_free(columnsParam);
     curl_easy_cleanup(curl);
   }
 }
@@ -63,7 +91,7 @@ int main(int argc, char* argv[]) {
 
   if (argc < 2) {
     std::cerr << "Usage: " << argv[0] << " <type> [args]\n";
-    std::cerr << "Types:\n  range <url> <range>\n  query <url> <sql_query>\n";
+    std::cerr << "Types:\n  range <url> <range>\n  query <url> <sql_query>\n select <url> <selectivity {0-1}> <columns {column1-...-columnN}>\n";
     curl_global_cleanup();
     return 1;
   }
@@ -78,8 +106,13 @@ int main(int argc, char* argv[]) {
     std::string url = argv[2];
     std::string query = argv[3];
     makeQueryRequest(url, "sql=" + query);
+  } else if (requestType == "select" && argc == 5) {
+    std::string url = argv[2];
+    std::string selectivity = argv[3];
+    std::string columns = argv[4];
+    makeSelectRequest(url, "selectivity=" + selectivity, "columns=" + columns);
   } else {
-    std::cerr << "Invalid arguments. Use 'range' or 'query' with correct parameters." << std::endl;
+    std::cerr << "Invalid arguments. Use 'range', 'query', or 'select' with correct parameters." << std::endl;
     curl_global_cleanup();
     return 1;
   }

@@ -517,7 +517,7 @@ void handle_request_selectivity_query(http_request request) {
       return;
     }
     if (query_params.find(U("columns")) == query_params.end()) {
-      request.reply(status_codes::BadRequest, "Missing 'selectivity' query parameter");
+      request.reply(status_codes::BadRequest, "Missing 'columns' query parameter");
       return;
     }
     double selectivity = std::stod(custom_url_decode(uri::decode(query_params[U("selectivity")])));
