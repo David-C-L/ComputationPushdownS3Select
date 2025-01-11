@@ -1,8 +1,4 @@
-#include <cpprest/http_listener.h>
-#include <cpprest/uri.h>
-#include <cpprest/json.h>
-#include <cpprest/producerconsumerstream.h>
-#include <duckdb.hpp>
+// #include <duckdb.hpp>
 #include <fstream>
 #include <sstream>
 #include <regex>
@@ -13,6 +9,25 @@
 #include <iomanip>
 #include <chrono>
 #include <filesystem>
+#include <random>
+#include <sstream>
+
+#include <arrow/api.h>
+#include <arrow/io/api.h>
+#include <arrow/ipc/api.h>
+#include <arrow/result.h>
+#include <arrow/status.h>
+#include <arrow/table.h>
+#include <parquet/arrow/reader.h>
+#include <parquet/arrow/writer.h>
+#include <arrow/compute/api.h>
+
+#undef U
+
+#include <cpprest/http_listener.h>
+#include <cpprest/uri.h>
+#include <cpprest/json.h>
+#include <cpprest/producerconsumerstream.h>
 
 using namespace web;
 using namespace web::http;
@@ -38,22 +53,214 @@ void logNow(int64_t bytes = 0) {
 }
 
 std::string generate_random_filename() {
-    // Use the system temporary directory
-    std::string temp_dir = std::filesystem::temp_directory_path().string();
+  // Use the system temporary directory
+  std::string temp_dir = std::filesystem::temp_directory_path().string();
 
-    // Generate a random suffix for the file name
-    auto now = std::chrono::system_clock::now();
-    auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+  // Generate a random suffix for the file name
+  auto now = std::chrono::system_clock::now();
+  auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
 
-    std::random_device rd;
-    std::mt19937 generator(rd());
-    std::uniform_int_distribution<int> dist(100000, 999999);
+  std::random_device rd;
+  std::mt19937 generator(rd());
+  std::uniform_int_distribution<int> dist(100000, 999999);
 
-    std::ostringstream filename;
-    filename << temp_dir << "/duckdb_output_" << timestamp << "_" << dist(generator) << ".csv";
+  std::ostringstream filename;
+  filename << temp_dir << "/duckdb_output_" << timestamp << "_" << dist(generator) << ".csv";
 
-    return filename.str();
+  return filename.str();
 }
+
+std::shared_ptr<arrow::Table> readRowGroup(std::unique_ptr<parquet::arrow::FileReader>& reader, int row_group_index) {
+  std::shared_ptr<arrow::Table> row_group_table;
+  auto status = reader->ReadRowGroup(row_group_index, &row_group_table);
+  if (!status.ok()) {
+    throw std::runtime_error("Failed to read row group: " + status.ToString());
+  }
+  return row_group_table;
+}
+
+std::shared_ptr<arrow::Table> filterRowGroup(const std::shared_ptr<arrow::Table>& table, const std::string& column_name, int64_t threshold) {
+  auto schema = table->schema();
+  auto col_index = schema->GetFieldIndex(column_name);
+  if (col_index == -1) {
+    throw std::runtime_error("Column not found: " + column_name);
+  }
+
+  auto column = table->column(col_index);
+  // auto chunked_array = column->chunked_array();
+
+  // Assuming column is of type Int64 for simplicity
+  // Filter the table using the mask
+  // Filter the table using the mask
+  auto filter_result = arrow::compute::CallFunction("greater", {table, arrow::Datum(threshold)});
+  if (!filter_result.status().ok()) {
+    throw std::runtime_error("Failed to filter table: " + filter_result.status().ToString());
+  }
+
+  auto mask = filter_result.ValueOrDie();
+
+  // Filter the table using the mask
+  auto filtered_result = arrow::compute::Filter(table, mask);
+  if (!filtered_result.status().ok()) {
+    throw std::runtime_error("Failed to filter table: " + filtered_result.status().ToString());
+  }
+
+  return filtered_result.ValueOrDie().table();
+}
+
+std::shared_ptr<arrow::Table> filterRowGroupByProportion(const std::shared_ptr<arrow::Table>& table, const std::vector<std::string>& column_names, double proportion) {
+  if (proportion <= 0.0 || proportion > 1.0) {
+    throw std::invalid_argument("Proportion must be between 0 and 1.");
+  }
+
+  auto schema = table->schema();
+  int64_t num_rows = table->num_rows();
+
+  // Generate a single mask
+  std::vector<bool> mask_values(num_rows, false);
+  int64_t num_selected = static_cast<int64_t>(num_rows * proportion);
+
+  std::vector<int64_t> indices(num_rows);
+  std::iota(indices.begin(), indices.end(), 0);
+
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::shuffle(indices.begin(), indices.end(), gen);
+
+  for (int64_t i = 0; i < num_selected; ++i) {
+    mask_values[indices[i]] = true;
+  }
+
+  // Convert mask to an Arrow BooleanArray
+  arrow::BooleanBuilder mask_builder;
+  for (bool value : mask_values) {
+    auto append_status = mask_builder.Append(value);
+    if (!append_status.ok()) {
+      throw std::runtime_error("Failed to append to mask builder: " + append_status.ToString());
+    }
+  }
+  std::shared_ptr<arrow::Array> mask;
+  auto mask_status = mask_builder.Finish(&mask);
+  if (!mask_status.ok()) {
+    throw std::runtime_error("Failed to create mask: " + mask_status.ToString());
+  }
+
+  // Filter the table using the mask
+  arrow::compute::ExecContext exec_context;
+  auto filter_result = arrow::compute::Filter(table, mask);
+  if (!filter_result.status().ok()) {
+    throw std::runtime_error("Failed to filter table: " + filter_result.status().ToString());
+  }
+
+  auto filtered_table = filter_result.ValueOrDie().table();
+
+  // Select only the specified columns
+  std::vector<std::shared_ptr<arrow::Field>> selected_fields;
+  std::vector<std::shared_ptr<arrow::ChunkedArray>> selected_columns;
+  for (const auto& column_name : column_names) {
+    auto col_index = schema->GetFieldIndex(column_name);
+    if (col_index == -1) {
+      throw std::runtime_error("Column not found: " + column_name);
+    }
+    selected_fields.push_back(schema->field(col_index));
+    selected_columns.push_back(filtered_table->column(col_index));
+  }
+
+  auto selected_schema = std::make_shared<arrow::Schema>(selected_fields);
+  return arrow::Table::Make(selected_schema, selected_columns);
+}
+
+void writeFilteredRowGroup(std::unique_ptr<parquet::arrow::FileWriter>& writer, const std::shared_ptr<arrow::Table>& table) {
+  auto status = writer->WriteTable(*table, 1024);
+  if (!status.ok()) {
+    throw std::runtime_error("Failed to write row group to output Parquet file: " + status.ToString());
+  }
+}
+
+std::shared_ptr<arrow::Buffer> writeRowGroupToBuffer(const std::shared_ptr<arrow::Table>& table, const std::shared_ptr<parquet::WriterProperties>& writer_properties) {
+    // Create a BufferOutputStream to hold the serialized data
+    std::shared_ptr<arrow::io::BufferOutputStream> buffer_output_stream;
+    auto buffer_result = arrow::io::BufferOutputStream::Create();
+    if (!buffer_result.ok()) {
+        throw std::runtime_error("Failed to create BufferOutputStream: " + buffer_result.status().ToString());
+    }
+    buffer_output_stream = buffer_result.ValueOrDie();
+
+    // Create a Parquet writer using the buffer
+    std::unique_ptr<parquet::arrow::FileWriter> writer;
+    auto writer_status = parquet::arrow::FileWriter::Open(*table->schema(), arrow::default_memory_pool(), buffer_output_stream, writer_properties, &writer);
+    if (!writer_status.ok()) {
+        throw std::runtime_error("Failed to create Parquet writer: " + writer_status.ToString());
+    }
+
+    // Write the table to the buffer
+    auto write_status = writer->WriteTable(*table, 1024); // Use a suitable row group size
+    if (!write_status.ok()) {
+        throw std::runtime_error("Failed to write row group to buffer: " + write_status.ToString());
+    }
+
+    // Finalize the writer
+    auto close_status = writer->Close();
+    if (!close_status.ok()) {
+        throw std::runtime_error("Failed to finalize Parquet writer: " + close_status.ToString());
+    }
+
+    // Return the serialized data as a buffer
+    return buffer_output_stream->Finish().ValueOrDie();
+}
+
+void processParquetFileInBatches(const std::string& input_file, const std::vector<std::string> &column_names, const double proportion, concurrency::streams::ostream out_stream) {
+  // Open input file
+  std::shared_ptr<arrow::io::ReadableFile> infile;
+  auto infile_result = arrow::io::ReadableFile::Open(input_file);
+  if (!infile_result.ok()) {
+    throw std::runtime_error("Failed to open input Parquet file: " + infile_result.status().ToString());
+  }
+  infile = infile_result.ValueOrDie();
+
+  // Create Parquet file reader
+  std::unique_ptr<parquet::arrow::FileReader> reader;
+  auto reader_status = parquet::arrow::OpenFile(infile, arrow::default_memory_pool(), &reader);
+  if (!reader_status.ok()) {
+    throw std::runtime_error("Failed to create Parquet reader: " + reader_status.ToString());
+  }
+
+  // Get writer properties
+  auto writer_properties = parquet::WriterProperties::Builder().compression(parquet::Compression::GZIP)->build();
+
+  // // Open output file
+  // std::shared_ptr<arrow::io::FileOutputStream> outfile;
+  // auto outfile_result = arrow::io::FileOutputStream::Open(output_file);
+  // if (!outfile_result.ok()) {
+  //   throw std::runtime_error("Failed to open output Parquet file: " + outfile_result.status().ToString());
+  // }
+  // outfile = outfile_result.ValueOrDie();
+
+  // // Prepare Parquet writer
+  // std::unique_ptr<parquet::arrow::FileWriter> writer;
+  // auto writer_status = parquet::arrow::FileWriter::Open(*reader->schema(), arrow::default_memory_pool(), outfile, writer_properties);
+  // if (!writer_status.ok()) {
+  //   throw std::runtime_error("Failed to create Parquet writer: " + writer_status.status().ToString());
+  // }
+  // writer = std::move(writer_status).ValueOrDie();
+
+  // Process each row group
+  int num_row_groups = reader->num_row_groups();
+  for (int i = 0; i < num_row_groups; ++i) {
+    auto row_group_table = readRowGroup(reader, i);
+    auto filtered_table = filterRowGroupByProportion(row_group_table, column_names, proportion);
+    auto buffer = writeRowGroupToBuffer(filtered_table, writer_properties);
+    out_stream.streambuf().putn_nocopy(buffer->data(), buffer->size()).wait();
+    // writeFilteredRowGroup(writer, filtered_table);
+  }
+
+  // // Finalize writing
+  // auto close_status = writer->Close();
+  // if (!close_status.ok()) {
+  //   throw std::runtime_error("Failed to finalize Parquet writer: " + close_status.ToString());
+  // }
+}
+
 
 // Function to read a specific byte range from a file
 std::vector<uint8_t> read_byte_range(const std::string& filepath, size_t start, size_t end) {
@@ -172,67 +379,67 @@ void handle_request_byte_ranges(http_request request) {
   }
 }
 
-void execute_sql_on_parquet(const std::string &parquet_file,
-                            const std::string &sql_query,
-                            concurrency::streams::ostream out_stream) {
+// void execute_sql_on_parquet(const std::string &parquet_file,
+//                             const std::string &sql_query,
+//                             concurrency::streams::ostream out_stream) {
 
-    duckdb::DBConfig config;
-    config.options.maximum_threads = 1;
-    duckdb::DuckDB db(nullptr, &config); // In-memory database
-    duckdb::Connection con(db);
+//     duckdb::DBConfig config;
+//     config.options.maximum_threads = 1;
+//     duckdb::DuckDB db(nullptr, &config); // In-memory database
+//     duckdb::Connection con(db);
 
-    // Load the Parquet file into DuckDB
-    std::ostringstream parquet_load_query;
-    parquet_load_query << "CREATE TABLE parquet_data AS SELECT * FROM read_parquet('" << parquet_file << "');";
-    con.Query(parquet_load_query.str());
+//     // Load the Parquet file into DuckDB
+//     std::ostringstream parquet_load_query;
+//     parquet_load_query << "CREATE TABLE parquet_data AS SELECT * FROM read_parquet('" << parquet_file << "');";
+//     con.Query(parquet_load_query.str());
     
 
-    // Generate a unique temporary file name
-    std::string temp_filename = generate_random_filename();
+//     // Generate a unique temporary file name
+//     std::string temp_filename = generate_random_filename();
 
-    // Prepare the COPY TO query
-    std::ostringstream query_stream;
-    query_stream << "COPY (" << sql_query << ") TO '" << temp_filename << "' (FORMAT CSV, HEADER TRUE);";
-    // Execute the COPY TO command
-    auto result = con.Query(query_stream.str());
-    if (!result || result->HasError()) {
-        std::remove(temp_filename.c_str()); // Clean up temporary file
-        throw std::runtime_error("SQL query execution failed: " + result->GetError());
-    }
+//     // Prepare the COPY TO query
+//     std::ostringstream query_stream;
+//     query_stream << "COPY (" << sql_query << ") TO '" << temp_filename << "' (FORMAT CSV, HEADER TRUE);";
+//     // Execute the COPY TO command
+//     auto result = con.Query(query_stream.str());
+//     if (!result || result->HasError()) {
+//         std::remove(temp_filename.c_str()); // Clean up temporary file
+//         throw std::runtime_error("SQL query execution failed: " + result->GetError());
+//     }
     
 
-    // Stream the temporary file to the output stream in chunks
-    try {
-        std::ifstream temp_file(temp_filename, std::ios::binary);
-        if (!temp_file.is_open()) {
-            throw std::runtime_error("Failed to open temporary file for streaming");
-        }
+//     // Stream the temporary file to the output stream in chunks
+//     try {
+//         std::ifstream temp_file(temp_filename, std::ios::binary);
+//         if (!temp_file.is_open()) {
+//             throw std::runtime_error("Failed to open temporary file for streaming");
+//         }
 
-        const size_t CHUNK_SIZE = 16 * 1024; // 16 KB chunks
-        std::vector<uint8_t> buffer(CHUNK_SIZE);
-        while (temp_file) {
-            temp_file.read(reinterpret_cast<char *>(buffer.data()), buffer.size());
-            std::streamsize bytes_read = temp_file.gcount();
-            if (bytes_read > 0) {
-                out_stream.streambuf().putn_nocopy(buffer.data(), bytes_read).wait();
-		// logNow(bytes_read);
-	    }
-        }
+//         const size_t CHUNK_SIZE = 16 * 1024; // 16 KB chunks
+//         std::vector<uint8_t> buffer(CHUNK_SIZE);
+//         while (temp_file) {
+//             temp_file.read(reinterpret_cast<char *>(buffer.data()), buffer.size());
+//             std::streamsize bytes_read = temp_file.gcount();
+//             if (bytes_read > 0) {
+//                 out_stream.streambuf().putn_nocopy(buffer.data(), bytes_read).wait();
+// 		// logNow(bytes_read);
+// 	    }
+//         }
 
-	// auto size = std::filesystem::file_size(temp_filename);
-	// std::cout << "FILE SIZE: " << size << std::endl;
-        temp_file.close();
-        std::remove(temp_filename.c_str()); // Delete the temporary file
+// 	// auto size = std::filesystem::file_size(temp_filename);
+// 	// std::cout << "FILE SIZE: " << size << std::endl;
+//         temp_file.close();
+//         std::remove(temp_filename.c_str()); // Delete the temporary file
 	
-        // Signal end of response
-	logNow();
-        out_stream.close().wait();
-    } catch (const std::exception &e) {
-        std::remove(temp_filename.c_str()); // Clean up the temporary file
-        out_stream.close().wait();
-        throw;
-    }
-}
+//         // Signal end of response
+// 	logNow();
+//         out_stream.close().wait();
+//     } catch (const std::exception &e) {
+//         std::remove(temp_filename.c_str()); // Clean up the temporary file
+//         out_stream.close().wait();
+//         throw;
+//     }
+// }
 
 std::string custom_url_decode(const std::string &value) {
   std::ostringstream decoded;
@@ -249,6 +456,19 @@ std::string custom_url_decode(const std::string &value) {
     }
   }
   return decoded.str();
+}
+
+std::vector<std::string> parse_column_name_list(const std::string &column_names) {
+  std::vector<std::string> res;
+  std::string column_name;
+  std::stringstream col_stream;
+  col_stream << column_names;
+
+  while (std::getline(col_stream, column_name, '-')) {
+    res.push_back(column_name);
+  }
+
+  return std::move(res);
 }
 
 void handle_request_sql_query(http_request request) {
@@ -280,7 +500,49 @@ void handle_request_sql_query(http_request request) {
 
     // Execute the SQL query and stream the output
     pplx::create_task([file_path, sql_query, out_stream]() {
-      execute_sql_on_parquet(file_path, sql_query, out_stream);
+      // execute_sql_on_parquet(file_path, sql_query, out_stream);
+    });
+    
+  } catch (const std::exception &e) {
+    request.reply(status_codes::InternalError, e.what());
+  }
+}
+
+void handle_request_selectivity_query(http_request request) {
+  try {
+    // Parse query parameters
+    auto query_params = uri::split_query(uri::decode(request.request_uri().query()));
+    if (query_params.find(U("selectivity")) == query_params.end()) {
+      request.reply(status_codes::BadRequest, "Missing 'selectivity' query parameter");
+      return;
+    }
+    if (query_params.find(U("columns")) == query_params.end()) {
+      request.reply(status_codes::BadRequest, "Missing 'selectivity' query parameter");
+      return;
+    }
+    double selectivity = std::stod(custom_url_decode(uri::decode(query_params[U("selectivity")])));
+    std::vector<std::string> column_names = parse_column_name_list(uri::decode(query_params[U("columns")]));
+    std::string file_path = "/home/ubuntu/tpch_1000MB_lineitem_gzip.parquet"; // Path to your file
+
+    // Check if the file exists
+    if (!std::ifstream(file_path)) {
+      request.reply(status_codes::NotFound, "File not found: " + file_path);
+      return;
+    }
+
+    // Create a producer-consumer buffer for chunked streaming
+    auto streambuf = concurrency::streams::producer_consumer_buffer<uint8_t>();
+    auto out_stream = streambuf.create_ostream();
+
+    // Set up the HTTP response for chunked transfer
+    http_response response(status_codes::OK);
+    response.headers().add(U("Content-Type"), U("application/vnd.apache.parquet"));
+    response.set_body(streambuf.create_istream());
+    request.reply(response);
+
+    // Execute the SQL query and stream the output
+    pplx::create_task([file_path, selectivity, column_names, out_stream]() {
+      processParquetFileInBatches(file_path, column_names, selectivity, out_stream);
     });
     
   } catch (const std::exception &e) {
@@ -302,6 +564,8 @@ void handle_request(http_request request) {
         handle_request_byte_ranges(request);
     } else if (path[0] == "query") {
         handle_request_sql_query(request);
+    } else if (path[0] == "select") {
+        handle_request_selectivity_query(request);
     } else {
         request.reply(status_codes::NotFound, "Unknown path");
     }

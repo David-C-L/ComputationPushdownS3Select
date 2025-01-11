@@ -59,23 +59,23 @@ ExternalProject_Add(arrow_project
 
 # # Set DuckDB installation directory
 # set(DUCKDB_INSTALL_DIR /home/david/Documents/PhD/papers/LazyLoading/duckdb_temp/libduckdb-linux-amd64/)
-set(DUCKDB_INSTALL_DIR ${CMAKE_BINARY_DIR}/duckdb-install)
+# set(DUCKDB_INSTALL_DIR ${CMAKE_BINARY_DIR}/duckdb-install)
 
-# Add DuckDB as an external project
-ExternalProject_Add(duckdb_project
-    PREFIX ${CMAKE_BINARY_DIR}/duckdb
-    GIT_REPOSITORY https://github.com/duckdb/duckdb.git
-    GIT_TAG v1.1.3
-    UPDATE_DISCONNECTED ON
-    CMAKE_ARGS
-	-DCMAKE_POSITION_INDEPENDENT_CODE=TRUE
-        -DCMAKE_INSTALL_PREFIX=${DUCKDB_INSTALL_DIR}
-        -DCMAKE_BUILD_TYPE=Release
-	-DBUILD_SHELL=OFF
-    BUILD_ALWAYS ON
-    BUILD_IN_SOURCE OFF
-    INSTALL_COMMAND make install
-)
+# # Add DuckDB as an external project
+# ExternalProject_Add(duckdb_project
+#     PREFIX ${CMAKE_BINARY_DIR}/duckdb
+#     GIT_REPOSITORY https://github.com/duckdb/duckdb.git
+#     GIT_TAG v1.1.3
+#     UPDATE_DISCONNECTED ON
+#     CMAKE_ARGS
+# 	-DCMAKE_POSITION_INDEPENDENT_CODE=TRUE
+#         -DCMAKE_INSTALL_PREFIX=${DUCKDB_INSTALL_DIR}
+#         -DCMAKE_BUILD_TYPE=Release
+# 	-DBUILD_SHELL=OFF
+#     BUILD_ALWAYS ON
+#     BUILD_IN_SOURCE OFF
+#     INSTALL_COMMAND make install
+# )
 
 # set(CPPRESTSDK_INSTALL_DIR ${CMAKE_BINARY_DIR}/cpprestsdk-install)
 
@@ -140,10 +140,10 @@ add_executable(ParquetServer ${ImplementationFiles})
 
 set_property(TARGET ParquetServer PROPERTY CXX_STANDARD 17)
 
-target_include_directories(ParquetServer SYSTEM PUBLIC ${ParquetServer_BINARY_DIR}/deps/include ${ARROW_INSTALL_DIR}/include ${Boost_INCLUDE_DIRS} ${CPPRESTSDK_INSTALL_DIR}/include ${DUCKDB_INSTALL_DIR}/include)
+target_include_directories(ParquetServer SYSTEM PUBLIC ${ParquetServer_BINARY_DIR}/deps/include ${ARROW_INSTALL_DIR}/include ${Boost_INCLUDE_DIRS} ${CPPRESTSDK_INSTALL_DIR}/include) # ${DUCKDB_INSTALL_DIR}/include)
 
-target_link_directories(ParquetServer PUBLIC ${ParquetServer_BINARY_DIR}/deps/lib ${ARROW_INSTALL_DIR}/lib ${CPPRESTSDK_INSTALL_DIR}/lib ${DUCKDB_INSTALL_DIR}/lib)
-add_dependencies(ParquetServer arrow_project duckdb_project)
+target_link_directories(ParquetServer PUBLIC ${ParquetServer_BINARY_DIR}/deps/lib ${ARROW_INSTALL_DIR}/lib ${CPPRESTSDK_INSTALL_DIR}/lib) # ${DUCKDB_INSTALL_DIR}/lib)
+add_dependencies(ParquetServer arrow_project) # duckdb_project)
 
 
 set(PUBLIC_HEADER_LIST
