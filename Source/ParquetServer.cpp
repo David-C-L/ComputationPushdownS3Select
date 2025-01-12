@@ -593,8 +593,19 @@ void handle_request(http_request request) {
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
   try {
+    if (argc > 0) {
+      std::string filename = argv[1];
+      std::ofstream outFile(filename);
+      if (!outFile) {
+        std::cerr << "Error: Unable to create file " << filename << "\n";
+        return 1;
+      }
+      outFile << "bytes,time\n";
+      outFile.close();
+    }
+    
     // Set up the HTTP listener
     uri_builder uri(U("http://localhost:8080"));
     auto addr = uri.to_uri().to_string();

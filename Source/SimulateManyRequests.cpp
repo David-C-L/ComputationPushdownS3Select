@@ -55,10 +55,14 @@ std::vector<std::string> convertRangePairsToStringRanges(const std::vector<std::
     currRangesInString = std::min(rangesPerString, static_cast<int64_t>(numRanges - rangesDone));
 
     for (size_t i = 0; i < currRangesInString - 1; i++) {
-      auto& [start, end] = ranges[i + rangesDone];
+      auto& range = ranges[i + rangesDone];
+      auto& start = range.first;
+      auto& end = range.second;
       currString << start << "-" << end << ",";
     }
-    auto& [start, end] = ranges[currRangesInString + rangesDone - 1];
+    auto& range = ranges[currRangesInString + rangesDone - 1];
+    auto& start = range.first;
+    auto& end = range.second;
     currString << start << "-" << end;
 
     res.push_back(currString.str());
