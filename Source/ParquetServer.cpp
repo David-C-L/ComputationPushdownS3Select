@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <random>
 #include <sstream>
+#include <utility>
 
 #include <arrow/api.h>
 #include <arrow/io/api.h>
@@ -29,28 +30,29 @@
 #include <cpprest/json.h>
 #include <cpprest/producerconsumerstream.h>
 
+
 using namespace web;
 using namespace web::http;
 using namespace web::http::experimental::listener;
 
 void logNow(int64_t bytes = 0) {
-    // Get the current time as a time_point
-    auto now = std::chrono::system_clock::now();
+  // Get the current time as a time_point
+  auto now = std::chrono::system_clock::now();
 
-    // Convert to a time_t for calendar time
-    std::time_t current_time = std::chrono::system_clock::to_time_t(now);
+  // Convert to a time_t for calendar time
+  std::time_t current_time = std::chrono::system_clock::to_time_t(now);
 
-    // Extract the fractional seconds (milliseconds)
-    auto duration = now.time_since_epoch();
-    auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration) % 1000;
+  // Extract the fractional seconds (milliseconds)
+  auto duration = now.time_since_epoch();
+  auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration) % 1000;
 
-    // Format the output
-    std::ofstream logFile("select_10_data_read_log.csv", std::ios::app);
-    std::tm* local_time = std::localtime(&current_time); // Convert to local time
-    logFile << bytes << "," << std::put_time(local_time, "%H:%M:%S") << std::endl;
-    // logFile << bytes << "SENT AT:" << std::put_time(local_time, "%Y-%m-%d %H:%M:%S") << "." 
-    //           << std::setfill('0') << std::setw(3) << millis.count() << std::endl;
-    logFile.close();
+  // Format the output
+  std::ofstream logFile("ranges_10_1_data_read_log.csv", std::ios::app);
+  std::tm* local_time = std::localtime(&current_time); // Convert to local time
+  logFile << bytes << "," << std::put_time(local_time, "%H:%M:%S") << std::endl;
+  // logFile << bytes << "SENT AT:" << std::put_time(local_time, "%Y-%m-%d %H:%M:%S") << "." 
+  //           << std::setfill('0') << std::setw(3) << millis.count() << std::endl;
+  logFile.close();
 }
 
 std::string generate_random_filename() {
@@ -267,51 +269,59 @@ void processParquetFileInBatches(const std::string& input_file, const std::vecto
 }
 
 // Function to read a specific byte range from a file
-std::vector<uint8_t> read_byte_range(const std::string& filepath, size_t start, size_t end) {
-  std::ifstream file(filepath, std::ios::binary);
-  if (!file) {
-    throw std::runtime_error("Failed to open file: " + filepath);
-  }
-
-  // Determine file size
-  file.seekg(0, std::ios::end);
-  size_t file_size = file.tellg();
-  file.seekg(0, std::ios::beg);
-
-  // Adjust end range if it exceeds the file size
+std::vector<uint8_t> read_byte_range(std::ifstream& file, size_t start, size_t end, size_t file_size) {
   if (end > file_size) {
     end = file_size;
   }
-
   // Read the requested byte range
   size_t range_size = end - start;
   file.seekg(start, std::ios::beg);
   std::vector<uint8_t> buffer(range_size);
   file.read(reinterpret_cast<char*>(buffer.data()), range_size);
+
+  logNow(range_size);
+	  
   return buffer;
 }
 
-// Function to parse multiple ranges from the Range header
-std::vector<std::pair<size_t, size_t>> parse_ranges(const std::string& range_header) {
-  std::vector<std::pair<size_t, size_t>> ranges;
-  std::regex range_regex(R"(bytes=(\d+)-(\d+))");
-  std::smatch match;
+std::vector<std::pair<int64_t, int64_t>> parseStringToPairs(const std::string& input) {
+  std::vector<std::pair<int64_t, int64_t>> result;
 
-  std::string::const_iterator search_start(range_header.cbegin());
-  while (std::regex_search(search_start, range_header.cend(), match, range_regex)) {
-    size_t start = std::stoul(match[1]);
-    size_t end = std::stoul(match[2]) + 1; // Exclusive range
-    ranges.emplace_back(start, end);
-    search_start = match.suffix().first;
+  // Remove "bytes=" prefix if present
+  std::string processedInput = input;
+  const std::string prefix = "bytes=";
+  if (processedInput.find(prefix) == 0) {
+    processedInput = processedInput.substr(prefix.length());
+  }
+  
+  // Split by commas
+  std::istringstream stream(processedInput);
+  std::string segment;
+  while (std::getline(stream, segment, ',')) {
+    // Split by hyphen
+    size_t hyphenPos = segment.find('-');
+    if (hyphenPos == std::string::npos) {
+      throw std::invalid_argument("Invalid format: segment does not contain a hyphen");
+    }
+
+    std::string startStr = segment.substr(0, hyphenPos);
+    std::string endStr = segment.substr(hyphenPos + 1);
+    try {
+      int64_t start = std::stoll(startStr);
+      int64_t end = std::stoll(endStr);
+      result.emplace_back(start, end);
+    } catch (const std::exception& e) {
+      throw std::invalid_argument("Invalid number format in segment: " + segment);
+    }
   }
 
-  return ranges;
+  return result;
 }
 
 // Function to handle incoming requests asynchronously
 void handle_request_byte_ranges(http_request request) {
   try {
-    std::string filepath = "/home/ubuntu/tpch_1000MB_lineitem_gzip.parquet"; // Path to your file
+    std::string filepath = "/home/david/Documents/PhD/datasets/tpc_h_wisent_no_dict_enc/sf1000/tpch_1000MB_lineitem.bin"; // Path to your file
     std::string range_header;
 
     // Check if the Range header is present
@@ -323,12 +333,12 @@ void handle_request_byte_ranges(http_request request) {
     }
 
     // Parse the Range header for multiple byte ranges
-    auto ranges = parse_ranges(range_header);
+    auto ranges = parseStringToPairs(range_header);
     if (ranges.empty()) {
       request.reply(status_codes::RangeNotSatisfiable, "No valid ranges provided");
       return;
     }
-
+    
     // Prepare the multipart/byteranges response
     std::string boundary = "MULTIPART_BYTERANGES";
     http_response response(status_codes::PartialContent);
@@ -344,14 +354,22 @@ void handle_request_byte_ranges(http_request request) {
 
     pplx::create_task([ranges, filepath, ostream, boundary] {
       try {
-	      
-	for (const auto& range : ranges) {
-	  size_t start = range.first;
-	  size_t end = range.second;
+	// std::cout << "Num ranges to read: " << ranges.size() << std::endl;
+
+	std::ifstream file(filepath, std::ios::binary);
+	if (!file) {
+	  throw std::runtime_error("Failed to open file: " + filepath);
+	}
+	// Determine file size
+	file.seekg(0, std::ios::end);
+	size_t file_size = file.tellg();
+	file.seekg(0, std::ios::beg);
+    
+	for (const auto& [start, end] : ranges) {
 
 	  // Read the byte range
-	  auto byte_data = read_byte_range(filepath, start, end);
-
+	  auto byte_data = read_byte_range(file, start, end, file_size);
+	  
 	  // Write the part headers
 	  std::ostringstream part_headers;
 	  part_headers << "--" << boundary << "\r\n";
@@ -361,7 +379,6 @@ void handle_request_byte_ranges(http_request request) {
 
 	  // Write the byte range data
 	  ostream.streambuf().putn_nocopy(byte_data.data(), byte_data.size()).wait();
-	  // logNow(byte_data.size());
 	  ostream.print("\r\n").wait();
 	}
 
