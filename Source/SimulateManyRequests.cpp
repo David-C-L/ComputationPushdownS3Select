@@ -4,75 +4,69 @@
 #include <iomanip>
 #include <thread>
 #include <string>
+#include <algorithm>
+#include <random>
+#include <cmath>
 #include <fstream>
 #include <cstdlib> // For system()
 
-inline std::vector<std::string> getBounds() {
-  return {
-    "0-749,1544551699-1544551990",
-    "1544473056-1544551699",
-    "1268028-2220734,2933017-3092550",
-    "6850197-7802903,8515935-8674719",
-    "12431617-13383575,14096606-14256140",
-    "18013787-18965744,19678776-19838309",
-    "23594458-24547164,25260196-25418980",
-    "29175129-30127086,30840118-30999651",
-    "34755801-35707758,36420789-36580323",
-    "40336472-41289178,42001461-42160994",
-    "45917892-46869849,47582881-47742414",
-    "51499312-52452018,53165050-53323835",
-    "57079984-58031941,58744972-58903757",
-    "62659906-63611863,64324895-64484428",
-    "68243573-69196279,69909311-70068095",
-    "73826491-74778448,75491480-75651013",
-    "79407163-80359869,81072900-81231685",
-    "84990081-85942038,86655070-86814603",
-    "90570003-91521960,92234992-92394525",
-    "96149925-97102631,97814914-97974448",
-    "101730597-102682554,103395585-103555119",
-    "107312766-108264723,108977755-109136539",
-    "112893437-113845394,114558426-114717959",
-    "118474857-119426815,120139846-120298631",
-    "124052533-125005239,125717522-125877055",
-    "129633953-130585910,131298942-131458475",
-    "135216122-136168079,136881111-137040644",
-    "140797542-141749500,142462531-142622065"
-  };
+template<typename T>
+T randomBetween(T min, T max) {
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<T> dist(min, max);
+  return dist(gen);
 }
 
-std::vector<std::string> readStringsFromFile(const std::string& filePath) {
-    std::vector<std::string> lines;
-    std::ifstream file(filePath);
+std::vector<std::pair<int64_t, int64_t>> generateRanges(int64_t start, int64_t end, double_t proportion, int64_t numRanges) {
+  // Validate inputs
+  if (start >= end || proportion < 0 || proportion > 1 || numRanges <= 0) {
+    throw std::invalid_argument("Invalid input parameters.");
+  }
 
-    if (!file.is_open()) {
-        std::cerr << "Error: Could not open file " << filePath << std::endl;
-        return lines; // Return an empty vector on failure
-    }
+  // Calculate total range size and target coverage size
+  auto rangeSize = end - start;
+  auto avgBlockSize = static_cast<int64_t>(std::round(rangeSize / numRanges));
+  auto targetBlockCoverage = static_cast<int64_t>(std::round(avgBlockSize * proportion));
+  
+  std::vector<std::pair<int64_t, int64_t>> ranges;
+  ranges.reserve(numRanges);
+  
+  for (int64_t rangesDone = 0, currBlockStart = start; rangesDone < numRanges && currBlockStart < end; rangesDone++, currBlockStart += avgBlockSize) {
+    int64_t randRangeStartInBlock = randomBetween(currBlockStart, currBlockStart + targetBlockCoverage);
+    
+    ranges.emplace_back(randRangeStartInBlock, randRangeStartInBlock + targetBlockCoverage);
+  }
 
-    std::string line;
-    while (std::getline(file, line)) {
-        lines.push_back(line);
-    }
-
-    file.close();
-    return lines;
+  return std::move(ranges);
 }
 
-void logNow(int id) {
-    // Get the current time as a time_point
-    auto now = std::chrono::system_clock::now();
+std::vector<std::string> convertRangePairsToStringRanges(const std::vector<std::pair<int64_t, int64_t>>& ranges, int64_t rangesPerString) {
 
-    // Convert to a time_t for calendar time
-    std::time_t current_time = std::chrono::system_clock::to_time_t(now);
+  auto numRanges = ranges.size();
+  int64_t numStrings = (numRanges / rangesPerString) + 1;
+  std::vector<std::string> res;
+  res.reserve(numStrings);
 
-    // Extract the fractional seconds (milliseconds)
-    auto duration = now.time_since_epoch();
-    auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration) % 1000;
+  auto rangesDone = 0;
+  int64_t currRangesInString = 0;
+  std::stringstream currString;
+  while (rangesDone < numRanges) {
+    currRangesInString = std::min(rangesPerString, static_cast<int64_t>(numRanges - rangesDone));
 
-    // Format the output
-    std::tm* local_time = std::localtime(&current_time); // Convert to local time
-    std::cout << "THREAD " << id << " DONE AT:" << std::put_time(local_time, "%Y-%m-%d %H:%M:%S") << "." 
-              << std::setfill('0') << std::setw(3) << millis.count() << std::endl;
+    for (size_t i = 0; i < currRangesInString - 1; i++) {
+      auto& [start, end] = ranges[i + rangesDone];
+      currString << start << "-" << end << ",";
+    }
+    auto& [start, end] = ranges[currRangesInString + rangesDone - 1];
+    currString << start << "-" << end;
+
+    res.push_back(currString.str());
+    currString.str(std::string());
+    rangesDone += currRangesInString;
+  }
+
+  return std::move(res);
 }
 
 // Function to execute the request program with arguments
@@ -143,9 +137,14 @@ int main(int argc, char* argv[]) {
   std::vector<std::thread> threads;
 
   // Determine request type and parameter
-  if (requestType == "range") {
+  if (requestType == "range" && argc == 5) {
     url = "http://localhost:8080/range";
-    std::vector<std::string> params = getBounds();
+    std::string selectivityParam = argv[4];
+    double selectivity = std::stod(selectivityParam);
+    const auto ranges = generateRanges(0, 100000000, selectivity, 30000);
+    // std::cout << "Generated Ranges: " << ranges.size() << std::endl;
+    std::vector<std::string> params = convertRangePairsToStringRanges(ranges, 255);
+    // std::cout << "Generated Range Strings: " << params.size() << std::endl;
     // Launch n threads for query requests
     for (int i = 0; i < n; ++i) {
       threads.emplace_back(callRequestProgramRanges, executablePath, requestType, url, params, i + 1);
