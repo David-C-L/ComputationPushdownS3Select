@@ -45,11 +45,12 @@ void logNow(int64_t bytes = 0) {
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration) % 1000;
 
     // Format the output
-    // std::ofstream logFile("unfiltered_10_data_sent_log.txt");
+    std::ofstream logFile("select_10_data_read_log.csv", std::ios::app);
     std::tm* local_time = std::localtime(&current_time); // Convert to local time
-    std::cout << bytes << "SENT AT:" << std::put_time(local_time, "%Y-%m-%d %H:%M:%S") << "." 
-              << std::setfill('0') << std::setw(3) << millis.count() << std::endl;
-    // logFile.close();
+    logFile << bytes << "," << std::put_time(local_time, "%H:%M:%S") << std::endl;
+    // logFile << bytes << "SENT AT:" << std::put_time(local_time, "%Y-%m-%d %H:%M:%S") << "." 
+    //           << std::setfill('0') << std::setw(3) << millis.count() << std::endl;
+    logFile.close();
 }
 
 std::string generate_random_filename() {
@@ -100,7 +101,9 @@ std::shared_ptr<arrow::Table> readRowGroup(std::unique_ptr<parquet::arrow::FileR
     bytes_read += column_chunk->total_compressed_size();
   }
 
-  std::cout << "Row group " << row_group_index << " read with " << bytes_read << " bytes." << std::endl;
+  logNow(bytes_read);
+
+  // std::cout << "Row group " << row_group_index << " read with " << bytes_read << " bytes." << std::endl;
 
   return row_group_table;
 }
