@@ -69,11 +69,12 @@ void makeSelectRequest(const std::string& url, const std::string& selectivity, c
   if (curl) {
     auto selectivityParam = curl_easy_escape(curl, selectivity.c_str(), selectivity.length());
     auto columnsParam = curl_easy_escape(curl, columns.c_str(), columns.length());
-    std::string fullUrl = url + "?" + selectivityParam + "#" + columnsParam;
+    std::string fullUrl = url + "?" + selectivityParam + "&" + columnsParam;
     curl_easy_setopt(curl, CURLOPT_URL, fullUrl.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
 
-    // std::cout << "Making query request...\n";
+    // std::cout << "Making select request... " << fullUrl << "\n";
+    
     res = curl_easy_perform(curl);
 
     if (res != CURLE_OK) {

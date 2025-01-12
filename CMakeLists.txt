@@ -52,6 +52,7 @@ ExternalProject_Add(arrow_project
         -DARROW_CSV=ON             # Enable CSV support
         -DARROW_FILESYSTEM=ON      # Enable filesystem support
         -DARROW_BUILD_SHARED=ON    # Build shared libraries
+        -DARROW_WITH_ZLIB=ON       # Enable GZIP
         -DARROW_BUILD_TESTS=OFF
     BUILD_ALWAYS ON
     INSTALL_COMMAND make install
@@ -157,7 +158,7 @@ foreach(Target IN LISTS AllTargets)
   if(NOT WIN32)
     target_link_libraries(${Target} dl)
   endif(NOT WIN32)
-    target_link_libraries(${Target} Threads::Threads)
+    target_link_libraries(${Target} Threads::Threads ssl crypto)
     set_target_properties(${Target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
     if(MSVC)
         target_compile_options(${Target} PUBLIC "/Zc:__cplusplus")
@@ -167,7 +168,7 @@ foreach(Target IN LISTS AllTargets)
     add_dependencies(${Target} arrow_project)
     target_include_directories(${Target} SYSTEM PUBLIC ${ParquetServer_BINARY_DIR}/deps/include)
     target_include_directories(${Target} SYSTEM PUBLIC ${CMAKE_BINARY_DIR}/deps/include)
-    target_link_libraries(${Target} arrow parquet ${Boost_LIBRARIES} cpprestsdk::cpprest duckdb)
+    target_link_libraries(${Target} arrow parquet ${Boost_LIBRARIES} cpprestsdk::cpprest) # duckdb)
     if(UNIX AND NOT APPLE)
         target_link_libraries(${Target} rt)
     endif()

@@ -94,11 +94,9 @@ void callRequestProgramSelect(const std::string& executablePath, const std::stri
   std::string command = executablePath + " " + requestType + " " + url + " " + selectivityParam + " " + columnsParam;
   // std::cout << "Thread " << id << " executing: " << command << std::endl;
   int result = system(command.c_str());
-  if (result != 0) {
-    std::cerr << "Thread " << id << " failed to execute command." << std::endl;
-  }
-  
-  //  else {
+  // if (result != 0) {
+  //   std::cerr << "Thread " << id << " failed to execute command." << std::endl;
+  // } else {
   //   std::cout << "Thread " << id << " completed successfully." << std::endl;
   // }
 }
@@ -127,7 +125,7 @@ void callRequestProgramRanges(const std::string& executablePath, const std::stri
 int main(int argc, char* argv[]) {
   if (argc != 4 && argc != 5) {
     std::cerr << "Usage: " << argv[0] << " <path_to_executable> <request_type> <n> <selectivity {0-1}>?\n";
-    std::cerr << "Request types:\n  1. range\n  2. unfiltered_query\n  3. filtered_query\n 4. select\n";
+    std::cerr << "Request types:\n  1. range\n  2. unfiltered_query\n  3. filtered_query\n  4. select\n";
     return 1;
   }
 
@@ -165,7 +163,7 @@ int main(int argc, char* argv[]) {
     requestType = "query";
     url = "http://localhost:8080/query";
     param = "\"SELECT l_discount, l_extendedprice FROM parquet_data WHERE l_shipdate >= date '1994-01-01' AND l_shipdate < date '1995-01-01' AND l_discount >= 0.059 AND l_discount <= 0.061 AND l_quantity < 24\"";
-  } else if (requestType == "select" && argc != 5) {
+  } else if (requestType == "select" && argc == 5) {
     requestType = "select";
     url = "http://localhost:8080/select";
     std::string selectivityParam = argv[4];

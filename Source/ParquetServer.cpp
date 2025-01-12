@@ -71,11 +71,37 @@ std::string generate_random_filename() {
 }
 
 std::shared_ptr<arrow::Table> readRowGroup(std::unique_ptr<parquet::arrow::FileReader>& reader, int row_group_index) {
+   // Validate row group index
+  if (row_group_index < 0 || row_group_index >= reader->num_row_groups()) {
+    throw std::out_of_range("Row group index is out of bounds");
+  }
+
   std::shared_ptr<arrow::Table> row_group_table;
+
   auto status = reader->ReadRowGroup(row_group_index, &row_group_table);
   if (!status.ok()) {
+    std::cout << status.ToString() << std::endl;
     throw std::runtime_error("Failed to read row group: " + status.ToString());
   }
+  
+  auto parquet_metadata = reader->parquet_reader()->metadata();
+  if (!parquet_metadata) {
+    throw std::runtime_error("Failed to access Parquet metadata");
+  }
+
+  auto row_group_metadata = parquet_metadata->RowGroup(row_group_index);
+  int64_t bytes_read = 0;
+
+  for (int i = 0; i < row_group_metadata->num_columns(); ++i) {
+    auto column_chunk = row_group_metadata->ColumnChunk(i);
+    if (!column_chunk) {
+      throw std::runtime_error("Failed to access ColumnChunk for column " + std::to_string(i));
+    }
+    bytes_read += column_chunk->total_compressed_size();
+  }
+
+  std::cout << "Row group " << row_group_index << " read with " << bytes_read << " bytes." << std::endl;
+
   return row_group_table;
 }
 
@@ -85,12 +111,8 @@ std::shared_ptr<arrow::Table> filterRowGroup(const std::shared_ptr<arrow::Table>
   if (col_index == -1) {
     throw std::runtime_error("Column not found: " + column_name);
   }
-
   auto column = table->column(col_index);
-  // auto chunked_array = column->chunked_array();
-
   // Assuming column is of type Int64 for simplicity
-  // Filter the table using the mask
   // Filter the table using the mask
   auto filter_result = arrow::compute::CallFunction("greater", {table, arrow::Datum(threshold)});
   if (!filter_result.status().ok()) {
@@ -109,7 +131,7 @@ std::shared_ptr<arrow::Table> filterRowGroup(const std::shared_ptr<arrow::Table>
 }
 
 std::shared_ptr<arrow::Table> filterRowGroupByProportion(const std::shared_ptr<arrow::Table>& table, const std::vector<std::string>& column_names, double proportion) {
-  if (proportion <= 0.0 || proportion > 1.0) {
+  if (proportion < 0.0 || proportion > 1.0) {
     throw std::invalid_argument("Proportion must be between 0 and 1.");
   }
 
@@ -167,7 +189,8 @@ std::shared_ptr<arrow::Table> filterRowGroupByProportion(const std::shared_ptr<a
   }
 
   auto selected_schema = std::make_shared<arrow::Schema>(selected_fields);
-  return arrow::Table::Make(selected_schema, selected_columns);
+  auto output_table = arrow::Table::Make(selected_schema, selected_columns);
+  return output_table;
 }
 
 void writeFilteredRowGroup(std::unique_ptr<parquet::arrow::FileWriter>& writer, const std::shared_ptr<arrow::Table>& table) {
@@ -224,25 +247,8 @@ void processParquetFileInBatches(const std::string& input_file, const std::vecto
   if (!reader_status.ok()) {
     throw std::runtime_error("Failed to create Parquet reader: " + reader_status.ToString());
   }
-
   // Get writer properties
-  auto writer_properties = parquet::WriterProperties::Builder().compression(parquet::Compression::GZIP)->build();
-
-  // // Open output file
-  // std::shared_ptr<arrow::io::FileOutputStream> outfile;
-  // auto outfile_result = arrow::io::FileOutputStream::Open(output_file);
-  // if (!outfile_result.ok()) {
-  //   throw std::runtime_error("Failed to open output Parquet file: " + outfile_result.status().ToString());
-  // }
-  // outfile = outfile_result.ValueOrDie();
-
-  // // Prepare Parquet writer
-  // std::unique_ptr<parquet::arrow::FileWriter> writer;
-  // auto writer_status = parquet::arrow::FileWriter::Open(*reader->schema(), arrow::default_memory_pool(), outfile, writer_properties);
-  // if (!writer_status.ok()) {
-  //   throw std::runtime_error("Failed to create Parquet writer: " + writer_status.status().ToString());
-  // }
-  // writer = std::move(writer_status).ValueOrDie();
+  auto writer_properties = parquet::WriterProperties::Builder().compression(parquet::Compression::GZIP)->build();  
 
   // Process each row group
   int num_row_groups = reader->num_row_groups();
@@ -254,13 +260,8 @@ void processParquetFileInBatches(const std::string& input_file, const std::vecto
     // writeFilteredRowGroup(writer, filtered_table);
   }
 
-  // // Finalize writing
-  // auto close_status = writer->Close();
-  // if (!close_status.ok()) {
-  //   throw std::runtime_error("Failed to finalize Parquet writer: " + close_status.ToString());
-  // }
+  out_stream.close().wait();
 }
-
 
 // Function to read a specific byte range from a file
 std::vector<uint8_t> read_byte_range(const std::string& filepath, size_t start, size_t end) {
@@ -521,8 +522,8 @@ void handle_request_selectivity_query(http_request request) {
       return;
     }
     double selectivity = std::stod(custom_url_decode(uri::decode(query_params[U("selectivity")])));
-    std::vector<std::string> column_names = parse_column_name_list(uri::decode(query_params[U("columns")]));
-    std::string file_path = "/home/ubuntu/tpch_1000MB_lineitem_gzip.parquet"; // Path to your file
+    std::vector<std::string> column_names = parse_column_name_list(custom_url_decode(uri::decode(query_params[U("columns")])));
+    std::string file_path = "/home/david/Documents/PhD/datasets/parquet_tpch/tpch_1000MB_lineitem_gzip.parquet"; // Path to your file
 
     // Check if the file exists
     if (!std::ifstream(file_path)) {
@@ -536,7 +537,8 @@ void handle_request_selectivity_query(http_request request) {
 
     // Set up the HTTP response for chunked transfer
     http_response response(status_codes::OK);
-    response.headers().add(U("Content-Type"), U("application/vnd.apache.parquet"));
+    // response.headers().add(U("Content-Type"), U("application/vnd.apache.parquet"));
+    response.headers().add(U("Content-Type"), U("application/octet-stream"));
     response.set_body(streambuf.create_istream());
     request.reply(response);
 
