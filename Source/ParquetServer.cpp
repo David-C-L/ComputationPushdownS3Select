@@ -30,12 +30,13 @@
 #include <cpprest/json.h>
 #include <cpprest/producerconsumerstream.h>
 
+std::string LOG_FILENAME;
 
 using namespace web;
 using namespace web::http;
 using namespace web::http::experimental::listener;
 
-void logNow(int64_t bytes = 0) {
+void logNow(int64_t bytes = 0, double selectivity = 0.0, std::string method = "select") {
   // Get the current time as a time_point
   auto now = std::chrono::system_clock::now();
 
@@ -47,12 +48,29 @@ void logNow(int64_t bytes = 0) {
   auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration) % 1000;
 
   // Format the output
-  std::ofstream logFile("ranges_10_1_data_read_log.csv", std::ios::app);
+  std::ofstream logFile(LOG_FILENAME, std::ios::app);
   std::tm* local_time = std::localtime(&current_time); // Convert to local time
-  logFile << bytes << "," << std::put_time(local_time, "%H:%M:%S") << std::endl;
+  logFile << bytes << "," << std::put_time(local_time, "%H:%M:%S") << "," << selectivity << "," << method << std::endl;
   // logFile << bytes << "SENT AT:" << std::put_time(local_time, "%Y-%m-%d %H:%M:%S") << "." 
   //           << std::setfill('0') << std::setw(3) << millis.count() << std::endl;
   logFile.close();
+}
+
+std::string custom_url_decode(const std::string &value) {
+  std::ostringstream decoded;
+  for (size_t i = 0; i < value.length(); ++i) {
+    if (value[i] == '+') {
+      decoded << ' '; // Convert '+' to space
+    } else if (value[i] == '%' && i + 2 < value.length()) {
+      // Decode %XX to a character
+      char hex[3] = {value[i + 1], value[i + 2], '\0'};
+      decoded << static_cast<char>(std::strtol(hex, nullptr, 16));
+      i += 2;
+    } else {
+      decoded << value[i];
+    }
+  }
+  return decoded.str();
 }
 
 std::string generate_random_filename() {
@@ -73,7 +91,7 @@ std::string generate_random_filename() {
   return filename.str();
 }
 
-std::shared_ptr<arrow::Table> readRowGroup(std::unique_ptr<parquet::arrow::FileReader>& reader, int row_group_index) {
+std::shared_ptr<arrow::Table> readRowGroup(std::unique_ptr<parquet::arrow::FileReader>& reader, int row_group_index, double selectivity) {
    // Validate row group index
   if (row_group_index < 0 || row_group_index >= reader->num_row_groups()) {
     throw std::out_of_range("Row group index is out of bounds");
@@ -103,7 +121,7 @@ std::shared_ptr<arrow::Table> readRowGroup(std::unique_ptr<parquet::arrow::FileR
     bytes_read += column_chunk->total_compressed_size();
   }
 
-  logNow(bytes_read);
+  logNow(bytes_read, selectivity, "select");
 
   // std::cout << "Row group " << row_group_index << " read with " << bytes_read << " bytes." << std::endl;
 
@@ -163,12 +181,14 @@ std::shared_ptr<arrow::Table> filterRowGroupByProportion(const std::shared_ptr<a
   for (bool value : mask_values) {
     auto append_status = mask_builder.Append(value);
     if (!append_status.ok()) {
+      std::cerr << "Failed to append to mask builder: " << append_status.ToString() << std::endl;
       throw std::runtime_error("Failed to append to mask builder: " + append_status.ToString());
     }
   }
   std::shared_ptr<arrow::Array> mask;
   auto mask_status = mask_builder.Finish(&mask);
   if (!mask_status.ok()) {
+    std::cerr << "Failed to create mask: " << mask_status.ToString() << std::endl;
     throw std::runtime_error("Failed to create mask: " + mask_status.ToString());
   }
 
@@ -176,6 +196,7 @@ std::shared_ptr<arrow::Table> filterRowGroupByProportion(const std::shared_ptr<a
   arrow::compute::ExecContext exec_context;
   auto filter_result = arrow::compute::Filter(table, mask);
   if (!filter_result.status().ok()) {
+    std::cerr << "Failed to filter table: " << filter_result.status().ToString() << std::endl;
     throw std::runtime_error("Failed to filter table: " + filter_result.status().ToString());
   }
 
@@ -187,6 +208,7 @@ std::shared_ptr<arrow::Table> filterRowGroupByProportion(const std::shared_ptr<a
   for (const auto& column_name : column_names) {
     auto col_index = schema->GetFieldIndex(column_name);
     if (col_index == -1) {
+      std::cerr << "Column not found: " << column_name << std::endl;
       throw std::runtime_error("Column not found: " + column_name);
     }
     selected_fields.push_back(schema->field(col_index));
@@ -258,7 +280,7 @@ void processParquetFileInBatches(const std::string& input_file, const std::vecto
   // Process each row group
   int num_row_groups = reader->num_row_groups();
   for (int i = 0; i < num_row_groups; ++i) {
-    auto row_group_table = readRowGroup(reader, i);
+    auto row_group_table = readRowGroup(reader, i, proportion);
     auto filtered_table = filterRowGroupByProportion(row_group_table, column_names, proportion);
     auto buffer = writeRowGroupToBuffer(filtered_table, writer_properties);
     out_stream.streambuf().putn_nocopy(buffer->data(), buffer->size()).wait();
@@ -269,7 +291,7 @@ void processParquetFileInBatches(const std::string& input_file, const std::vecto
 }
 
 // Function to read a specific byte range from a file
-std::vector<uint8_t> read_byte_range(std::ifstream& file, size_t start, size_t end, size_t file_size) {
+std::vector<uint8_t> read_byte_range(std::ifstream& file, size_t start, size_t end, size_t file_size, double selectivity) {
   if (end > file_size) {
     end = file_size;
   }
@@ -279,7 +301,7 @@ std::vector<uint8_t> read_byte_range(std::ifstream& file, size_t start, size_t e
   std::vector<uint8_t> buffer(range_size);
   file.read(reinterpret_cast<char*>(buffer.data()), range_size);
 
-  logNow(range_size);
+  logNow(range_size, selectivity, "range");
 	  
   return buffer;
 }
@@ -321,8 +343,15 @@ std::vector<std::pair<int64_t, int64_t>> parseStringToPairs(const std::string& i
 // Function to handle incoming requests asynchronously
 void handle_request_byte_ranges(http_request request) {
   try {
-    std::string filepath = "/home/david/Documents/PhD/datasets/tpc_h_wisent_no_dict_enc/sf1000/tpch_1000MB_lineitem.bin"; // Path to your file
+    std::string filepath = "/home/ubuntu/tpch_1000MB_lineitem.bin"; // Path to your file
     std::string range_header;
+
+    auto query_params = uri::split_query(uri::decode(request.request_uri().query()));
+    if (query_params.find(U("selectivity")) == query_params.end()) {
+      request.reply(status_codes::BadRequest, "Missing 'selectivity' query parameter");
+      return;
+    }
+    double selectivity = std::stod(custom_url_decode(uri::decode(query_params[U("selectivity")])));
 
     // Check if the Range header is present
     if (request.headers().has(U("Range"))) {
@@ -352,7 +381,7 @@ void handle_request_byte_ranges(http_request request) {
     // Reply to the request and asynchronously write chunks
     request.reply(response);
 
-    pplx::create_task([ranges, filepath, ostream, boundary] {
+    pplx::create_task([ranges, filepath, ostream, boundary, selectivity] {
       try {
 	// std::cout << "Num ranges to read: " << ranges.size() << std::endl;
 
@@ -368,7 +397,7 @@ void handle_request_byte_ranges(http_request request) {
 	for (const auto& [start, end] : ranges) {
 
 	  // Read the byte range
-	  auto byte_data = read_byte_range(file, start, end, file_size);
+	  auto byte_data = read_byte_range(file, start, end, file_size, selectivity);
 	  
 	  // Write the part headers
 	  std::ostringstream part_headers;
@@ -387,7 +416,7 @@ void handle_request_byte_ranges(http_request request) {
 	ostream.print(closing_boundary).wait();
 
 	// Close the stream
-	logNow();
+	// logNow();
 	ostream.close().wait();
 		
       } catch (const std::exception& e) {
@@ -462,23 +491,6 @@ void handle_request_byte_ranges(http_request request) {
 //     }
 // }
 
-std::string custom_url_decode(const std::string &value) {
-  std::ostringstream decoded;
-  for (size_t i = 0; i < value.length(); ++i) {
-    if (value[i] == '+') {
-      decoded << ' '; // Convert '+' to space
-    } else if (value[i] == '%' && i + 2 < value.length()) {
-      // Decode %XX to a character
-      char hex[3] = {value[i + 1], value[i + 2], '\0'};
-      decoded << static_cast<char>(std::strtol(hex, nullptr, 16));
-      i += 2;
-    } else {
-      decoded << value[i];
-    }
-  }
-  return decoded.str();
-}
-
 std::vector<std::string> parse_column_name_list(const std::string &column_names) {
   std::vector<std::string> res;
   std::string column_name;
@@ -543,7 +555,7 @@ void handle_request_selectivity_query(http_request request) {
     }
     double selectivity = std::stod(custom_url_decode(uri::decode(query_params[U("selectivity")])));
     std::vector<std::string> column_names = parse_column_name_list(custom_url_decode(uri::decode(query_params[U("columns")])));
-    std::string file_path = "/home/david/Documents/PhD/datasets/parquet_tpch/tpch_1000MB_lineitem_gzip.parquet"; // Path to your file
+    std::string file_path = "/home/ubuntu/tpch_1000MB_lineitem_gzip.parquet"; // Path to your file
 
     // Check if the file exists
     if (!std::ifstream(file_path)) {
@@ -597,12 +609,13 @@ int main(int argc, char* argv[]) {
   try {
     if (argc > 0) {
       std::string filename = argv[1];
+      LOG_FILENAME = filename;
       std::ofstream outFile(filename);
       if (!outFile) {
         std::cerr << "Error: Unable to create file " << filename << "\n";
         return 1;
       }
-      outFile << "bytes,time\n";
+      outFile << "bytes,time,selectivity,method\n";
       outFile.close();
     }
     

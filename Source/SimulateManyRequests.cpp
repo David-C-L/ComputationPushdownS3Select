@@ -100,11 +100,11 @@ void callRequestProgramSelect(const std::string& executablePath, const std::stri
 }
 
 // Function to execute the request program with arguments
-void callRequestProgramRanges(const std::string& executablePath, const std::string& requestType, const std::string& url, const std::vector<std::string>& params, int id) {
+void callRequestProgramRanges(const std::string& executablePath, const std::string& requestType, const std::string& url, const std::vector<std::string>& params, const std::string& selectivityParam, int id) {
   // std::cout << "Thread " << id << " executing: " << std::endl;
   int result;
   for (const std::string& param : params) {
-    std::string command = executablePath + " " + requestType + " " + url + " " + param;
+    std::string command = executablePath + " " + requestType + " " + url + " " + param + " " + selectivityParam;
     // std::cout << "   " << command << std::endl;
     result = system(command.c_str());
     if (result != 0) {
@@ -145,13 +145,13 @@ int main(int argc, char* argv[]) {
     url = "http://localhost:8080/range";
     std::string selectivityParam = argv[4];
     double selectivity = std::stod(selectivityParam);
-    const auto ranges = generateRanges(0, 100000000, selectivity, 30000);
+    const auto ranges = generateRanges(0, 1717986918, selectivity, 30000);
     // std::cout << "Generated Ranges: " << ranges.size() << std::endl;
     std::vector<std::string> params = convertRangePairsToStringRanges(ranges, 255);
     // std::cout << "Generated Range Strings: " << params.size() << std::endl;
     // Launch n threads for query requests
     for (int i = 0; i < n; ++i) {
-      threads.emplace_back(callRequestProgramRanges, executablePath, requestType, url, params, i + 1);
+      threads.emplace_back(callRequestProgramRanges, executablePath, requestType, url, params, selectivityParam, i + 1);
     }
     // Wait for all threads to complete
     for (auto& t : threads) {
@@ -170,7 +170,8 @@ int main(int argc, char* argv[]) {
     requestType = "select";
     url = "http://localhost:8080/select";
     std::string selectivityParam = argv[4];
-    std::string columnsParam = "l_quantity";
+    std::string columnsParam = "l_quantity-l_orderkey-l_partkey-l_suppkey-l_linenumber-l_extendedprice-l_discount-l_tax-l_returnflag-l_linestatus-l_shipdate-l_commitdate-l_receiptdate-l_shipinstruct-l_shipmode-l_comment";
+    // std::string columnsParam = "l_quantity";
 
     for (int i = 0; i < n; ++i) {
       threads.emplace_back(callRequestProgramSelect, executablePath, requestType, url, selectivityParam, columnsParam, i + 1);

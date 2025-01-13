@@ -8,14 +8,17 @@ static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* use
 }
 
 // Function to perform a range request
-void makeRangeRequest(const std::string& url, const std::string& range) {
+void makeRangeRequest(const std::string& url, const std::string& range, const std::string& selectivity) {
   CURL* curl;
   CURLcode res;
 
   curl = curl_easy_init();
 
   if (curl) {
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    auto selectivityParam = curl_easy_escape(curl, selectivity.c_str(), selectivity.length());
+    std::string fullUrl = url + "?" + selectivityParam;
+    
+    curl_easy_setopt(curl, CURLOPT_URL, fullUrl.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
 
     // Set the range header
@@ -92,17 +95,18 @@ int main(int argc, char* argv[]) {
 
   if (argc < 2) {
     std::cerr << "Usage: " << argv[0] << " <type> [args]\n";
-    std::cerr << "Types:\n  range <url> <range>\n  query <url> <sql_query>\n select <url> <selectivity {0-1}> <columns {column1-...-columnN}>\n";
+    std::cerr << "Types:\n  range <url> <range> <selectivity {0-1}>\n  query <url> <sql_query>\n select <url> <selectivity {0-1}> <columns {column1-...-columnN}>\n";
     curl_global_cleanup();
     return 1;
   }
 
   std::string requestType = argv[1];
 
-  if (requestType == "range" && argc == 4) {
+  if (requestType == "range" && argc == 5) {
     std::string url = argv[2];
     std::string range = argv[3];
-    makeRangeRequest(url, range);
+    std::string selectivity = argv[4];
+    makeRangeRequest(url, range, "selectivity=" + selectivity);
   } else if (requestType == "query" && argc == 4) {
     std::string url = argv[2];
     std::string query = argv[3];
