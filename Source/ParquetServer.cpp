@@ -47,10 +47,12 @@ void logNow(int64_t bytes = 0, double selectivity = 0.0, std::string method = "s
   auto duration = now.time_since_epoch();
   auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration) % 1000;
 
+  uint64_t pageSize = 4096;
+  auto pageBytes = (bytes + pageSize - 1) & ~pageSize;
   // Format the output
   std::ofstream logFile(LOG_FILENAME, std::ios::app);
   std::tm* local_time = std::localtime(&current_time); // Convert to local time
-  logFile << bytes << "," << std::put_time(local_time, "%H:%M:%S") << "," << selectivity << "," << method << std::endl;
+  logFile << pageBytes << "," << std::put_time(local_time, "%H:%M:%S") << "," << selectivity << "," << method << std::endl;
   // logFile << bytes << "SENT AT:" << std::put_time(local_time, "%Y-%m-%d %H:%M:%S") << "." 
   //           << std::setfill('0') << std::setw(3) << millis.count() << std::endl;
   logFile.close();
